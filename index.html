@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Delivery Judge">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>Delivery Judge AI</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0b0c;color:#f5f5f7}
+.wrap{max-width:720px;margin:auto;padding:14px 14px 40px}
+h1{font-size:28px;margin:8px 0 2px}.sub{font-size:13px;color:#96969c;margin-bottom:14px}
+.card{background:#171719;border:1px solid #2a2a2e;border-radius:18px;padding:14px;margin:11px 0}
+.goal{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.kpi{background:#101012;border-radius:14px;padding:12px}.kpi small{color:#96969c}.kpi b{display:block;font-size:25px;margin-top:4px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+input,button{font:inherit}input{width:100%;background:#0e0e10;color:#fff;border:1px solid #343439;border-radius:12px;padding:12px}
+button{border:0;border-radius:15px;padding:15px;font-weight:800}.primary{width:100%;background:#fff;color:#111;font-size:17px}.secondary{width:100%;background:#29292d;color:white}
+.file{display:block;width:100%;background:#2a2a2e;padding:17px;border-radius:15px;text-align:center;font-weight:700}.file input{display:none}
+.preview{width:100%;display:none;border-radius:14px;margin-top:12px}
+.big{font-size:46px;font-weight:900;text-align:center;margin:8px 0}.score{text-align:center;color:#bdbdc3}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.metric{background:#0f0f11;border-radius:12px;padding:11px;text-align:center}.metric small{color:#96969d}.metric b{display:block;font-size:18px;margin-top:4px}
+.reason{background:#101012;border-radius:12px;padding:10px;margin:7px 0;font-size:14px}.small{font-size:12px;color:#8f8f96;line-height:1.5}
+.ok{color:#5ce878}.mid{color:#ffd45a}.bad{color:#ff6565}.hidden{display:none}
+.progress{height:7px;background:#2a2a2e;border-radius:20px;overflow:hidden;margin-top:10px;display:none}.bar{height:100%;width:0;background:#fff}
+.notice{background:#231f13;border:1px solid #4a3e18;color:#f4df98;border-radius:14px;padding:12px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Delivery Judge AI</h1>
+  <div class="sub">iPhone Safari / 公開URL用</div>
+
+  <div class="notice" id="httpsNotice" style="display:none">
+    このページはローカルファイルとして開かれています。OCRを安定動作させるには、GitHub PagesなどHTTPSで公開してSafariから開いてください。
+  </div>
+
+  <div class="card">
+    <div class="goal">
+      <div class="kpi"><small>今日の目標</small><b><span id="targetText">8,000</span>円</b></div>
+      <div class="kpi"><small>現在売上</small><b><span id="salesText">0</span>円</b></div>
+    </div>
+    <div class="row">
+      <input id="target" type="number" value="8000" inputmode="numeric" placeholder="今日の目標">
+      <input id="sales" type="number" value="0" inputmode="numeric" placeholder="現在売上">
+    </div>
+  </div>
+
+  <div class="card">
+    <label class="file">オファー画像を選ぶ
+      <input id="imageInput" type="file" accept="image/*">
+    </label>
+    <img id="preview" class="preview" alt="">
+    <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
+    <button class="primary" id="ocrBtn" style="margin-top:12px">すぐ判定</button>
+    <div class="small" style="margin-top:8px">画像を選んだらこのボタンだけ。OCRが失敗した場合は下の手入力から判定できます。</div>
+  </div>
+
+  <div class="card hidden" id="resultCard">
+    <div id="decision" class="big">—</div>
+    <div id="score" class="score"></div>
+    <div class="metrics">
+      <div class="metric"><small>円/分</small><b id="ypm">—</b></div>
+      <div class="metric"><small>時給換算</small><b id="hourly">—</b></div>
+      <div class="metric"><small>円/km</small><b id="ypkm">—</b></div>
+    </div>
+    <div id="summaryReason" class="reason"></div>
+    <div id="reasons"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:800;margin-bottom:10px">手入力判定</div>
+    <div class="row">
+      <input id="pay" type="number" placeholder="報酬 例 647" inputmode="numeric">
+      <input id="mins" type="number" placeholder="時間 例 26" inputmode="numeric">
+    </div>
+    <div class="row">
+      <input id="km" type="number" step="0.1" placeholder="距離 例 8.4" inputmode="decimal">
+      <button class="secondary" id="judgeBtn">判定</button>
+    </div>
+  </div>
+
+  <div class="small">判断支援専用です。Uber等のアプリを自動操作しません。</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let selectedFile=null;
+
+if(location.protocol==="file:") $("httpsNotice").style.display="block";
+
+function fmt(n){return Number(n||0).toLocaleString("ja-JP")}
+function sync(){ $("targetText").textContent=fmt($("target").value); $("salesText").textContent=fmt($("sales").value); save(); }
+$("target").addEventListener("input",sync); $("sales").addEventListener("input",sync);
+
+$("imageInput").addEventListener("change",e=>{
+  selectedFile=e.target.files?.[0]||null;
+  if(selectedFile){$("preview").src=URL.createObjectURL(selectedFile);$("preview").style.display="block";}
+});
+
+$("ocrBtn").addEventListener("click",async()=>{
+  if(!selectedFile){alert("先にオファー画像を選んでください");return;}
+  $("progress").style.display="block";$("bar").style.width="5%";$("ocrBtn").disabled=true;$("ocrBtn").textContent="読取中…";
+  try{
+    if(typeof Tesseract==="undefined") throw new Error("OCR library not loaded");
+    const result=await Tesseract.recognize(selectedFile,"jpn+eng",{logger:m=>{if(m.progress!=null)$("bar").style.width=Math.max(5,Math.round(m.progress*100))+"%";}});
+    parseText(result.data.text||"");
+    judge();
+  }catch(e){
+    alert("OCRを読み込めませんでした。公開URLをSafariで開くか、下の手入力判定を使ってください。");
+  }finally{
+    $("ocrBtn").disabled=false;$("ocrBtn").textContent="すぐ判定";setTimeout(()=>$("progress").style.display="none",400);
+  }
+});
+
+$("judgeBtn").addEventListener("click",judge);
+
+function find(text,patterns){for(const re of patterns){const m=text.match(re);if(m&&m[1])return m[1];}return null;}
+function parseText(text){
+  const t=text.replace(/，/g,",").replace(/．/g,".").replace(/￥/g,"¥");
+  const p=find(t,[/¥\s*([0-9,]{2,6})/i,/([0-9,]{2,6})\s*円/i]);
+  const m=find(t,[/([0-9]{1,3})\s*分/i,/([0-9]{1,3})\s*min/i]);
+  const k=find(t,[/([0-9]+(?:\.[0-9]+)?)\s*km/i,/([0-9]+(?:\.[0-9]+)?)\s*㎞/i]);
+  if(p)$("pay").value=p.replace(/,/g,"");if(m)$("mins").value=m;if(k)$("km").value=k;
+}
+
+function judge(){
+  const pay=Number($("pay").value),mins=Number($("mins").value),km=Number($("km").value);
+  if(!pay||!mins){alert("最低でも報酬と予定時間を入力してください");return;}
+  let score=50,reasons=[];const ypm=pay/mins,hourly=ypm*60,ypkm=km>0?pay/km:null;
+  if(ypm>=25){score+=25;reasons.push("時間効率が高い");}else if(ypm>=20){score+=8;reasons.push("時間効率は許容範囲");}else{score-=20;reasons.push("時間効率が低い");}
+  if(km>0){
+    if(km<=5){score+=10;reasons.push("短距離で回しやすい");}
+    else if(km<=8){score+=2;reasons.push("距離は中程度");}
+    else if(km>=10){score-=18;reasons.push("長距離なので強く減点");}
+    else{score-=8;reasons.push("距離がやや長い");}
+    if(ypkm>=150){score+=10;reasons.push("距離単価が良い");}else if(ypkm<90){score-=10;reasons.push("距離単価が低い");}
+  }
+  score=Math.max(0,Math.min(100,score));
+  let decision,cls,summary;
+  if(score>=70){decision="🟢 取る";cls="ok";summary="今の条件なら受ける寄り";}
+  else if(score>=50){decision="🟡 条件付き";cls="mid";summary="場所と鳴り次第";}
+  else{decision="🔴 見送り";cls="bad";summary="効率が弱く、次待ち優先";}
+  $("resultCard").classList.remove("hidden");$("decision").textContent=decision;$("decision").className="big "+cls;
+  $("score").textContent=`スコア ${score} / 100`;$("ypm").textContent=ypm.toFixed(1);$("hourly").textContent=Math.round(hourly)+"円";$("ypkm").textContent=ypkm?Math.round(ypkm):"—";
+  $("summaryReason").textContent=summary;$("reasons").innerHTML=reasons.map(r=>`<div class="reason">${r}</div>`).join("");
+  window.scrollTo({top:$("resultCard").offsetTop-10,behavior:"smooth"});
+}
+function save(){localStorage.setItem("dj_public",JSON.stringify({target:$("target").value,sales:$("sales").value}));}
+(function(){
+  try{const s=JSON.parse(localStorage.getItem("dj_public")||"null");if(s){$("target").value=s.target||8000;$("sales").value=s.sales||0;}}catch(e){}
+  sync();
+})();
+</script>
+</body>
+</html>
