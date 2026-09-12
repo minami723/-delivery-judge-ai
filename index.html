@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Delivery Judge">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>Delivery Judge AI</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0b0b0c;color:#f5f5f7}
+.wrap{max-width:720px;margin:auto;padding:14px 14px 44px}
+h1{font-size:28px;margin:10px 0 2px}.sub{font-size:13px;color:#96969c;margin-bottom:14px}
+.card{background:#171719;border:1px solid #2a2a2e;border-radius:18px;padding:14px;margin:12px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+input,button{font:inherit}input{width:100%;background:#0e0e10;color:#fff;border:1px solid #343439;border-radius:12px;padding:13px}
+button,label.file{display:block;width:100%;border:0;border-radius:15px;padding:16px;font-weight:800;text-align:center}
+.file{background:#2a2a2e}.file input{display:none}.primary{background:#fff;color:#111;margin-top:12px;font-size:17px}
+.secondary{background:#29292d;color:#fff}
+.preview{width:100%;display:none;border-radius:14px;margin-top:12px;max-height:430px;object-fit:contain}
+.progress{height:7px;background:#2a2a2e;border-radius:20px;overflow:hidden;margin-top:10px;display:none}.bar{height:100%;width:0;background:#fff}
+.status{text-align:center;color:#aaa;font-size:13px;margin-top:8px;min-height:18px}
+.big{font-size:46px;font-weight:900;text-align:center;margin:6px 0}.small{font-size:12px;color:#96969d;line-height:1.55}
+.metric{background:#101012;border-radius:12px;padding:11px;text-align:center}.metric small{color:#96969d}.metric b{display:block;font-size:18px;margin-top:4px}
+.reason{background:#101012;border-radius:12px;padding:11px;margin-top:8px;font-size:14px}.hidden{display:none}
+.ok{color:#5ce878}.mid{color:#ffd45a}.bad{color:#ff6565}.warn{color:#ffd45a}
+.badge{display:inline-block;background:#101012;border:1px solid #343439;border-radius:999px;padding:5px 9px;font-size:12px;color:#bbb}
+.debug{white-space:pre-wrap;word-break:break-all;background:#0d0d0f;border-radius:10px;padding:9px;font-size:11px;color:#888;max-height:160px;overflow:auto}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Delivery Judge AI</h1>
+<div class="sub">v1.0 Resilient OCR — Uber Eats画像向け</div>
+
+<div class="card">
+  <div class="grid2">
+    <div><div class="small">今日の目標</div><input id="target" type="number" value="8000" inputmode="numeric"></div>
+    <div><div class="small">現在売上</div><input id="sales" type="number" value="0" inputmode="numeric"></div>
+  </div>
+</div>
+
+<div class="card">
+  <label class="file">オファー画像を選ぶ<input id="file" type="file" accept="image/*"></label>
+  <img id="preview" class="preview">
+  <div id="progress" class="progress"><div id="bar" class="bar"></div></div>
+  <div id="status" class="status"></div>
+  <button id="scan" class="primary">すぐ判定</button>
+  <div class="small" style="margin-top:9px">全画面を読まず、Uberのオファーカード付近だけを優先OCR。初回だけOCRエンジン準備に時間がかかる場合があります。</div>
+</div>
+
+<div id="result" class="card hidden">
+  <div id="decision" class="big"></div>
+  <div id="confidence" class="status"></div>
+  <div class="grid3">
+    <div class="metric"><small>円/分</small><b id="ypm">—</b></div>
+    <div class="metric"><small>時給換算</small><b id="hourly">—</b></div>
+    <div class="metric"><small>円/km</small><b id="ypkm">—</b></div>
+  </div>
+  <div id="reason" class="reason"></div>
+</div>
+
+<div class="card">
+  <div style="font-weight:800;margin-bottom:10px">確認・手入力</div>
+  <div class="grid2">
+    <input id="pay" type="number" placeholder="報酬 647" inputmode="numeric">
+    <input id="mins" type="number" placeholder="時間 26" inputmode="numeric">
+  </div>
+  <div class="grid2" style="margin-top:10px">
+    <input id="km" type="number" step="0.1" placeholder="距離 8.4" inputmode="decimal">
+    <button id="judge" class="secondary">判定</button>
+  </div>
+  <div class="small" style="margin-top:8px">自動取得に自信がない数字だけ直して「判定」。全部を入れ直す必要はありません。</div>
+</div>
+
+<details class="card">
+  <summary>読取ログ（不具合確認用）</summary>
+  <div id="debug" class="debug">まだ読取していません。</div>
+</details>
+
+<div class="small">判断支援専用。Uber等のアプリを自動操作しません。</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let selectedFile=null, workerPromise=null;
+
+$("file").addEventListener("change",e=>{
+  selectedFile=e.target.files?.[0]||null;
+  if(selectedFile){
+    $("preview").src=URL.createObjectURL(selectedFile);
+    $("preview").style.display="block";
+    $("status").textContent="画像を選択しました";
+  }
+});
+$("judge").onclick=()=>judge(1);
+
+function loadImage(file){
+  return new Promise((resolve,reject)=>{
+    const img=new Image(),u=URL.createObjectURL(file);
+    img.onload=()=>{URL.revokeObjectURL(u);resolve(img)};
+    img.onerror=reject;img.src=u;
+  });
+}
+function canvasFromImage(img,maxW=1400){
+  const scale=Math.min(1,maxW/img.width),c=document.createElement("canvas");
+  c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
+  c.getContext("2d").drawImage(img,0,0,c.width,c.height);return c;
+}
+function crop(c,x,y,w,h,scale=2){
+  const sx=Math.round(c.width*x),sy=Math.round(c.height*y),sw=Math.round(c.width*w),sh=Math.round(c.height*h);
+  const o=document.createElement("canvas");o.width=Math.max(1,sw*scale);o.height=Math.max(1,sh*scale);
+  const ctx=o.getContext("2d");ctx.imageSmoothingEnabled=true;ctx.drawImage(c,sx,sy,sw,sh,0,0,o.width,o.height);return o;
+}
+function preprocess(src){
+  const o=document.createElement("canvas");o.width=src.width;o.height=src.height;
+  const ctx=o.getContext("2d");ctx.drawImage(src,0,0);
+  const im=ctx.getImageData(0,0,o.width,o.height),d=im.data;
+  for(let i=0;i<d.length;i+=4){
+    let g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    // auto-like high contrast for black text on light offer card
+    let v=g>165?255:(g<95?0:Math.round((g-95)*255/70));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(im,0,0);return o;
+}
+async function getWorker(){
+  if(!workerPromise){
+    workerPromise=(async()=>{
+      $("status").textContent="OCRエンジンを準備しています（初回のみ）";
+      const w=await Tesseract.createWorker("eng",1,{
+        logger:m=>{
+          if(m.progress!=null && m.status && m.status.includes("recognizing")){
+            $("bar").style.width=Math.round(m.progress*100)+"%";
+          }
+        }
+      });
+      await w.setParameters({
+        tessedit_char_whitelist:"0123456789.,¥￥kmKMminMIN() ",
+        preserve_interword_spaces:"1"
+      });
+      return w;
+    })();
+  }
+  return workerPromise;
+}
+async function recognize(worker,canvas,psm="6"){
+  await worker.setParameters({tessedit_pageseg_mode:psm});
+  const r=await worker.recognize(canvas);
+  return (r.data.text||"").trim();
+}
+function normalize(s){
+  return (s||"").replace(/,/g,"").replace(/[Oo]/g,"0").replace(/[Il|]/g,"1").replace(/￥/g,"¥");
+}
+function allNums(s){
+  return [...normalize(s).matchAll(/([0-9]{1,5}(?:\.[0-9]+)?)/g)].map(m=>+m[1]).filter(Number.isFinite);
+}
+function parseStrong(texts){
+  const joined=normalize(texts.join("\n"));
+  let pay=null,mins=null,km=null,conf=0;
+
+  let m=joined.match(/¥\s*([0-9]{3,5})/);
+  if(m){pay=+m[1];conf+=3}
+  m=joined.match(/([0-9]{1,3})\s*(?:min|mins|minute|minutes)\b/i);
+  if(m){mins=+m[1];conf+=3}
+  m=joined.match(/([0-9]{1,2}(?:\.[0-9]+)?)\s*km\b/i);
+  if(m){km=+m[1];conf+=3}
+
+  const nums=allNums(joined);
+
+  if(pay==null){
+    const c=nums.filter(n=>Number.isInteger(n)&&n>=250&&n<=5000);
+    if(c.length){pay=Math.max(...c);conf+=1}
+  }
+  if(km==null){
+    const c=nums.filter(n=>n>=0.5&&n<=40&&!Number.isInteger(n));
+    if(c.length){km=c[0];conf+=1}
+  }
+  if(mins==null){
+    const c=nums.filter(n=>Number.isInteger(n)&&n>=5&&n<=90&&n!==pay);
+    if(c.length){mins=c.find(n=>n>=10&&n<=60)??c[0];conf+=1}
+  }
+  // sanity checks
+  if(pay && (pay<250||pay>5000)) pay=null;
+  if(mins && (mins<5||mins>90)) mins=null;
+  if(km && (km<0.5||km>40)) km=null;
+  return {pay,mins,km,conf,joined};
+}
+
+$("scan").onclick=async()=>{
+  if(!selectedFile)return alert("先にオファー画像を選んでください");
+  $("scan").disabled=true;$("scan").textContent="解析中…";$("progress").style.display="block";$("bar").style.width="4%";
+  try{
+    const img=await loadImage(selectedFile),full=canvasFromImage(img,1400);
+    const worker=await getWorker();
+
+    // 3 complementary regions. Uber card is normally in lower half.
+    const card=preprocess(crop(full,0.05,0.48,0.90,0.46,2));
+    const payBand=preprocess(crop(full,0.07,0.56,0.62,0.16,3));
+    const timeBand=preprocess(crop(full,0.07,0.66,0.86,0.18,3));
+
+    $("status").textContent="オファーカードを読取中";
+    let texts=[];
+    texts.push(await recognize(worker,card,"6"));
+    let p=parseStrong(texts);
+
+    // Fallback only when needed, keeping normal path quick.
+    if(!p.pay){
+      $("status").textContent="報酬を再確認中";
+      texts.push(await recognize(worker,payBand,"7"));
+      p=parseStrong(texts);
+    }
+    if(!p.mins || !p.km){
+      $("status").textContent="時間・距離を再確認中";
+      texts.push(await recognize(worker,timeBand,"7"));
+      p=parseStrong(texts);
+    }
+
+    if(p.pay)$("pay").value=p.pay;
+    if(p.mins)$("mins").value=p.mins;
+    if(p.km)$("km").value=p.km;
+
+    $("debug").textContent=texts.map((t,i)=>`[OCR ${i+1}]\n${t}`).join("\n\n");
+
+    if(p.pay && p.mins){
+      $("status").textContent="読取完了";
+      judge(Math.min(1,p.conf/7));
+    }else{
+      $("status").textContent="一部だけ読めました";
+      alert("報酬または時間だけ取得できませんでした。空欄の数字だけ入力してください。");
+    }
+  }catch(e){
+    $("debug").textContent="ERROR: "+String(e);
+    $("status").textContent="読取エラー";
+    alert("自動読取に失敗しました。下の空欄だけ入力してください。");
+  }finally{
+    $("scan").disabled=false;$("scan").textContent="すぐ判定";$("bar").style.width="100%";
+    setTimeout(()=>$("progress").style.display="none",500);
+  }
+};
+
+function judge(conf=1){
+  const pay=+$("pay").value,mins=+$("mins").value,km=+$("km").value;
+  if(!pay||!mins)return alert("報酬と時間だけは必要です");
+  const ypm=pay/mins,hourly=ypm*60,ypkm=km?pay/km:0;
+  let score=50,reasons=[];
+  if(ypm>=25){score+=25;reasons.push("時間効率が強い")}
+  else if(ypm>=20){score+=8;reasons.push("時間効率は許容")}
+  else{score-=20;reasons.push("時間効率が弱い")}
+  if(km){
+    if(km<=5){score+=10;reasons.push("短距離")}
+    else if(km<=8){score+=2;reasons.push("中距離")}
+    else if(km>=10){score-=18;reasons.push("長距離")}
+    else{score-=8;reasons.push("やや長め")}
+    if(ypkm>=150){score+=10;reasons.push("距離単価が良い")}
+    else if(ypkm<90){score-=10;reasons.push("距離単価が低い")}
+  }
+  const remaining=Math.max(0,(+$("target").value||0)-(+ $("sales").value||0));
+  if(remaining>=5000){score+=3;reasons.push("今日の残目標が大きい")}
+  score=Math.max(0,Math.min(100,score));
+  let d,cls;
+  if(score>=70){d="🟢 取る";cls="ok"}
+  else if(score>=50){d="🟡 条件付き";cls="mid"}
+  else{d="🔴 見送り";cls="bad"}
+  $("decision").textContent=d;$("decision").className="big "+cls;
+  $("ypm").textContent=ypm.toFixed(1);$("hourly").textContent=Math.round(hourly)+"円";$("ypkm").textContent=km?Math.round(ypkm):"—";
+  $("confidence").textContent=conf>=.7?"自動読取信頼度：高":conf>=.4?"自動読取信頼度：中（数字を確認）":"手入力判定";
+  $("reason").textContent=reasons.join(" / ");
+  $("result").classList.remove("hidden");$("result").scrollIntoView({behavior:"smooth"});
+}
+</script>
+</body></html>
